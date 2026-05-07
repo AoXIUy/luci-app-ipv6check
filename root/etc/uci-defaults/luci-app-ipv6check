@@ -4,7 +4,8 @@
 # 确保配置文件存在
 [ -f /etc/config/ipv6check ] || touch /etc/config/ipv6check
 
-# 确保 rpcd 脚本有执行权限
+# 确保相关脚本有执行权限
+chmod +x /etc/init.d/ipv6check 2>/dev/null
 chmod +x /usr/libexec/rpcd/ipv6check 2>/dev/null
 chmod +x /usr/bin/ipv6check 2>/dev/null
 

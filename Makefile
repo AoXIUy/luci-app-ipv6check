@@ -57,27 +57,6 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/ipv6check/config.js $(1)/www/luci-static/resources/view/ipv6check/config.js
 endef
 
-define Package/$(PKG_NAME)/postinst
-#!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	# 运行时安装（非镜像构建）— 必须先设置权限再调用
-	chmod +x /etc/init.d/ipv6check
-	chmod +x /usr/bin/ipv6check
-	chmod +x /usr/libexec/rpcd/ipv6check
-	/etc/init.d/rpcd restart
-	/etc/init.d/ipv6check enable
-	/etc/init.d/ipv6check start
-}
-endef
-
-define Package/$(PKG_NAME)/prerm
-#!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	chmod +x /etc/init.d/ipv6check 2>/dev/null
-	/etc/init.d/ipv6check stop 2>/dev/null
-	/etc/init.d/ipv6check disable 2>/dev/null
-}
-endef
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
