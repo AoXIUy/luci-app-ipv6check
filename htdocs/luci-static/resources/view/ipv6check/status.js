@@ -135,175 +135,190 @@ return view.extend({
 	render: function(data) {
 		injectStyles();
 
-		var status = data[0] || {};
-		var logData = data[1] || {};
-		var historyData = data[2] || {};
-
-		var overallInfo = statusMap[status.overall] || statusMap['unknown'];
-		var targets = status.targets || [];
-
 		var wrap = E('div', { 'class': 'ipv6check-wrap' });
 
-		/* ===== 操作按钮 ===== */
-		var actionsDiv = E('div', { 'class': 'ipv6check-actions' });
+		var updateView = function(data) {
+			var status = data[0] || {};
+			var logData = data[1] || {};
+			var historyData = data[2] || {};
 
-		var checkBtn = E('button', {
-			'class': 'ipv6check-btn btn-primary',
-			'onclick': function() {
-				checkBtn.disabled = true;
-				checkBtn.innerHTML = '<span class="ipv6check-spinner"></span>检测中...';
-				callRunCheck().then(function() {
-					window.location.reload();
-				}).catch(function() {
-					checkBtn.disabled = false;
-					checkBtn.textContent = '🔍 立即检测';
+			var overallInfo = statusMap[status.overall] || statusMap['unknown'];
+			var targets = status.targets || [];
+
+			var content = document.createDocumentFragment();
+
+			/* ===== 操作按钮 ===== */
+			var actionsDiv = E('div', { 'class': 'ipv6check-actions' });
+
+			var checkBtn = E('button', {
+				'class': 'ipv6check-btn btn-primary',
+				'onclick': function() {
+					checkBtn.disabled = true;
+					checkBtn.innerHTML = '<span class="ipv6check-spinner"></span>检测中...';
+					callRunCheck().then(function() {
+						return Promise.all([callGetStatus(), callGetLog(80), callGetRestartHistory()]);
+					}).then(function(newData) {
+						updateView(newData);
+					}).catch(function() {
+						checkBtn.disabled = false;
+						checkBtn.textContent = '🔍 立即检测';
+					});
+				}
+			}, '🔍 立即检测');
+
+			var restartBtn = E('button', {
+				'class': 'ipv6check-btn btn-warning',
+				'onclick': function() {
+					var iface = status.restart_interface || 'wan6';
+					if (!confirm('确定要重启接口 ' + iface + ' 吗？')) return;
+					restartBtn.disabled = true;
+					restartBtn.innerHTML = '<span class="ipv6check-spinner"></span>重启中...';
+					callRestartInterface(iface).then(function() {
+						setTimeout(function() {
+							Promise.all([callGetStatus(), callGetLog(80), callGetRestartHistory()])
+								.then(updateView);
+						}, 5000);
+					});
+				}
+			}, '🔄 重启接口 (' + (status.restart_interface || 'wan6') + ')');
+
+			actionsDiv.appendChild(checkBtn);
+			actionsDiv.appendChild(restartBtn);
+			content.appendChild(actionsDiv);
+
+			/* ===== 总览卡片 ===== */
+			var overviewCard = E('div', { 'class': 'ipv6check-card' });
+			overviewCard.appendChild(E('h3', {}, '📊 连通性总览'));
+
+			var overviewGrid = E('div', { 'class': 'ipv6check-overview' });
+
+			/* 整体状态 */
+			overviewGrid.appendChild(E('div', {
+				'class': 'ipv6check-stat',
+				'style': { background: overallInfo.bg, border: '1px solid ' + overallInfo.color + '33' }
+			}, [
+				E('div', { 'class': 'label' }, '整体状态'),
+				E('div', { 'class': 'value', 'style': { color: overallInfo.color } }, overallInfo.text)
+			]));
+
+			/* 检测时间 */
+			overviewGrid.appendChild(E('div', {
+				'class': 'ipv6check-stat',
+				'style': { background: '#f0f4ff', border: '1px solid #d0dcf0' }
+			}, [
+				E('div', { 'class': 'label' }, '最近检测'),
+				E('div', { 'class': 'value', 'style': { fontSize: '14px', color: '#4a90d9' } },
+					status.check_time || '从未')
+			]));
+
+			/* 检测统计 */
+			overviewGrid.appendChild(E('div', {
+				'class': 'ipv6check-stat',
+				'style': { background: '#f0fff4', border: '1px solid #d0f0dc' }
+			}, [
+				E('div', { 'class': 'label' }, '目标通过率'),
+				E('div', { 'class': 'value', 'style': { color: '#27ae60' } },
+					(status.total_targets || 0) - (status.failed_targets || 0) + '/' + (status.total_targets || 0))
+			]));
+
+			/* 连续失败 */
+			var failColor = (status.consecutive_failures || 0) > 0 ? '#e74c3c' : '#27ae60';
+			overviewGrid.appendChild(E('div', {
+				'class': 'ipv6check-stat',
+				'style': { background: (status.consecutive_failures || 0) > 0 ? 'rgba(231,76,60,0.05)' : '#f0fff4',
+				           border: '1px solid ' + failColor + '33' }
+			}, [
+				E('div', { 'class': 'label' }, '连续失败'),
+				E('div', { 'class': 'value', 'style': { color: failColor } },
+					(status.consecutive_failures || 0) + '/' + (status.failure_threshold || 3))
+			]));
+
+			overviewCard.appendChild(overviewGrid);
+			content.appendChild(overviewCard);
+
+			/* ===== 目标详情卡片 ===== */
+			var targetsCard = E('div', { 'class': 'ipv6check-card' });
+			targetsCard.appendChild(E('h3', {}, '🎯 检测目标'));
+
+			var targetsGrid = E('div', { 'class': 'ipv6check-targets' });
+
+			if (targets.length === 0) {
+				targetsGrid.appendChild(E('div', {
+					'style': { padding: '20px', textAlign: 'center', color: '#999' }
+				}, '暂无检测目标，请前往「参数配置」添加'));
+			} else {
+				targets.forEach(function(t) {
+					var isOk = t.status === 'ok';
+					targetsGrid.appendChild(E('div', { 'class': 'ipv6check-target' }, [
+						E('div', {}, [
+							E('div', { 'class': 'name' }, t.name || '未命名'),
+							E('div', { 'class': 'host' }, t.host || '')
+						]),
+						E('div', {}, [
+							E('span', { 'class': 'status-badge ' + (isOk ? 'status-ok' : 'status-fail') },
+								isOk ? '可达' : '不可达'),
+							E('span', { 'style': { marginLeft: '10px', fontSize: '12px', color: '#999' } },
+								t.last_check || '')
+						])
+					]));
 				});
 			}
-		}, '🔍 立即检测');
 
-		var restartBtn = E('button', {
-			'class': 'ipv6check-btn btn-warning',
-			'onclick': function() {
-				var iface = status.restart_interface || 'wan6';
-				if (!confirm('确定要重启接口 ' + iface + ' 吗？')) return;
-				restartBtn.disabled = true;
-				restartBtn.innerHTML = '<span class="ipv6check-spinner"></span>重启中...';
-				callRestartInterface(iface).then(function() {
-					setTimeout(function() { window.location.reload(); }, 5000);
-				});
-			}
-		}, '🔄 重启接口 (' + (status.restart_interface || 'wan6') + ')');
+			targetsCard.appendChild(targetsGrid);
+			content.appendChild(targetsCard);
 
-		actionsDiv.appendChild(checkBtn);
-		actionsDiv.appendChild(restartBtn);
-		wrap.appendChild(actionsDiv);
+			/* ===== 运行信息卡片 ===== */
+			var infoCard = E('div', { 'class': 'ipv6check-card' });
+			infoCard.appendChild(E('h3', {}, 'ℹ️ 运行信息'));
 
-		/* ===== 总览卡片 ===== */
-		var overviewCard = E('div', { 'class': 'ipv6check-card' });
-		overviewCard.appendChild(E('h3', {}, '📊 连通性总览'));
+			var infoRows = [
+				['检测间隔', (status.interval || 300) + ' 秒'],
+				['自动重启', status.auto_restart ? '已启用' : '已禁用'],
+				['重启接口', status.restart_interface || 'wan6'],
+				['失败阈值', (status.failure_threshold || 3) + ' 次连续失败后重启'],
+				['上次重启', status.last_restart || '从未']
+			];
 
-		var overviewGrid = E('div', { 'class': 'ipv6check-overview' });
-
-		/* 整体状态 */
-		overviewGrid.appendChild(E('div', {
-			'class': 'ipv6check-stat',
-			'style': { background: overallInfo.bg, border: '1px solid ' + overallInfo.color + '33' }
-		}, [
-			E('div', { 'class': 'label' }, '整体状态'),
-			E('div', { 'class': 'value', 'style': { color: overallInfo.color } }, overallInfo.text)
-		]));
-
-		/* 检测时间 */
-		overviewGrid.appendChild(E('div', {
-			'class': 'ipv6check-stat',
-			'style': { background: '#f0f4ff', border: '1px solid #d0dcf0' }
-		}, [
-			E('div', { 'class': 'label' }, '最近检测'),
-			E('div', { 'class': 'value', 'style': { fontSize: '14px', color: '#4a90d9' } },
-				status.check_time || '从未')
-		]));
-
-		/* 检测统计 */
-		overviewGrid.appendChild(E('div', {
-			'class': 'ipv6check-stat',
-			'style': { background: '#f0fff4', border: '1px solid #d0f0dc' }
-		}, [
-			E('div', { 'class': 'label' }, '目标通过率'),
-			E('div', { 'class': 'value', 'style': { color: '#27ae60' } },
-				(status.total_targets || 0) - (status.failed_targets || 0) + '/' + (status.total_targets || 0))
-		]));
-
-		/* 连续失败 */
-		var failColor = (status.consecutive_failures || 0) > 0 ? '#e74c3c' : '#27ae60';
-		overviewGrid.appendChild(E('div', {
-			'class': 'ipv6check-stat',
-			'style': { background: (status.consecutive_failures || 0) > 0 ? 'rgba(231,76,60,0.05)' : '#f0fff4',
-			           border: '1px solid ' + failColor + '33' }
-		}, [
-			E('div', { 'class': 'label' }, '连续失败'),
-			E('div', { 'class': 'value', 'style': { color: failColor } },
-				(status.consecutive_failures || 0) + '/' + (status.failure_threshold || 3))
-		]));
-
-		overviewCard.appendChild(overviewGrid);
-		wrap.appendChild(overviewCard);
-
-		/* ===== 目标详情卡片 ===== */
-		var targetsCard = E('div', { 'class': 'ipv6check-card' });
-		targetsCard.appendChild(E('h3', {}, '🎯 检测目标'));
-
-		var targetsGrid = E('div', { 'class': 'ipv6check-targets' });
-
-		if (targets.length === 0) {
-			targetsGrid.appendChild(E('div', {
-				'style': { padding: '20px', textAlign: 'center', color: '#999' }
-			}, '暂无检测目标，请前往「参数配置」添加'));
-		} else {
-			targets.forEach(function(t) {
-				var isOk = t.status === 'ok';
-				targetsGrid.appendChild(E('div', { 'class': 'ipv6check-target' }, [
-					E('div', {}, [
-						E('div', { 'class': 'name' }, t.name || '未命名'),
-						E('div', { 'class': 'host' }, t.host || '')
-					]),
-					E('div', {}, [
-						E('span', { 'class': 'status-badge ' + (isOk ? 'status-ok' : 'status-fail') },
-							isOk ? '可达' : '不可达'),
-						E('span', { 'style': { marginLeft: '10px', fontSize: '12px', color: '#999' } },
-							t.last_check || '')
-					])
+			infoRows.forEach(function(row) {
+				infoCard.appendChild(E('div', { 'class': 'ipv6check-info-row' }, [
+					E('span', { 'class': 'key' }, row[0]),
+					E('span', { 'class': 'val' }, row[1])
 				]));
 			});
-		}
 
-		targetsCard.appendChild(targetsGrid);
-		wrap.appendChild(targetsCard);
+			content.appendChild(infoCard);
 
-		/* ===== 运行信息卡片 ===== */
-		var infoCard = E('div', { 'class': 'ipv6check-card' });
-		infoCard.appendChild(E('h3', {}, 'ℹ️ 运行信息'));
+			/* ===== 日志卡片 ===== */
+			var logCard = E('div', { 'class': 'ipv6check-card' });
+			logCard.appendChild(E('h3', {}, '📋 检测日志'));
 
-		var infoRows = [
-			['检测间隔', (status.interval || 300) + ' 秒'],
-			['自动重启', status.auto_restart ? '已启用' : '已禁用'],
-			['重启接口', status.restart_interface || 'wan6'],
-			['失败阈值', (status.failure_threshold || 3) + ' 次连续失败后重启'],
-			['上次重启', status.last_restart || '从未']
-		];
+			var logContent = logData.log || '暂无日志';
+			logCard.appendChild(E('div', { 'class': 'ipv6check-log' }, logContent));
 
-		infoRows.forEach(function(row) {
-			infoCard.appendChild(E('div', { 'class': 'ipv6check-info-row' }, [
-				E('span', { 'class': 'key' }, row[0]),
-				E('span', { 'class': 'val' }, row[1])
-			]));
-		});
+			content.appendChild(logCard);
 
-		wrap.appendChild(infoCard);
+			/* ===== 重启历史卡片 ===== */
+			var historyCard = E('div', { 'class': 'ipv6check-card' });
+			historyCard.appendChild(E('h3', {}, '🔄 接口重启历史'));
 
-		/* ===== 日志卡片 ===== */
-		var logCard = E('div', { 'class': 'ipv6check-card' });
-		logCard.appendChild(E('h3', {}, '📋 检测日志'));
+			var historyContent = historyData.history || '暂无重启记录';
+			historyCard.appendChild(E('div', { 'class': 'ipv6check-log', 'style': { maxHeight: '200px' } }, historyContent));
 
-		var logContent = (logData.log || '暂无日志').replace(/\\n/g, '\n');
-		logCard.appendChild(E('div', { 'class': 'ipv6check-log' }, logContent));
+			content.appendChild(historyCard);
 
-		wrap.appendChild(logCard);
+			dom.content(wrap, content);
+		};
 
-		/* ===== 重启历史卡片 ===== */
-		var historyCard = E('div', { 'class': 'ipv6check-card' });
-		historyCard.appendChild(E('h3', {}, '🔄 接口重启历史'));
-
-		var historyContent = (historyData.history || '暂无重启记录').replace(/\\n/g, '\n');
-		historyCard.appendChild(E('div', { 'class': 'ipv6check-log', 'style': { maxHeight: '200px' } }, historyContent));
-
-		wrap.appendChild(historyCard);
+		updateView(data);
 
 		/* ===== 启用轮询自动刷新 ===== */
 		poll.add(function() {
-			return callGetStatus().then(function(newStatus) {
-				/* 轮询更新概览和目标状态 */
-				/* 由于 DOM 操作复杂度，这里采用简单的页面刷新策略 */
-				/* 生产环境可替换为精细化 DOM Diff */
+			return Promise.all([
+				callGetStatus(),
+				callGetLog(80),
+				callGetRestartHistory()
+			]).then(function(newData) {
+				updateView(newData);
 			});
 		}, 30);
 

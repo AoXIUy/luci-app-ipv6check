@@ -14,23 +14,32 @@ do_get_log() {
 	lines=$(jsonfilter -e '@.lines' 2>/dev/null)
 	[ -z "$lines" ] && lines=50
 
+	. /usr/share/libubox/jshn.sh
+	json_init
+
 	if [ -f "$LOG_FILE" ]; then
 		local log_content
-		log_content=$(tail -n "$lines" "$LOG_FILE" | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
-		printf '{"log":"%s","lines":%d}' "$log_content" "$lines"
+		log_content=$(tail -n "$lines" "$LOG_FILE")
+		json_add_string "log" "$log_content"
+		json_add_int "lines" "$lines"
 	else
-		echo '{"log":"暂无日志","lines":0}'
+		json_add_string "log" "暂无日志"
+		json_add_int "lines" 0
 	fi
+	json_dump
 }
 
 do_get_restart_history() {
+	. /usr/share/libubox/jshn.sh
+	json_init
 	if [ -f "${STATUS_DIR}/restart_history" ]; then
 		local history
-		history=$(cat "${STATUS_DIR}/restart_history" | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
-		printf '{"history":"%s"}' "$history"
+		history=$(cat "${STATUS_DIR}/restart_history")
+		json_add_string "history" "$history"
 	else
-		echo '{"history":"暂无重启记录"}'
+		json_add_string "history" "暂无重启记录"
 	fi
+	json_dump
 }
 
 do_run_check() {
@@ -58,11 +67,16 @@ do_restart_interface() {
 	logger -t ipv6check "手动重启接口: ${iface}"
 	echo "${timestamp} | 手动重启接口 ${iface}" >> "${STATUS_DIR}/restart_history"
 
-	ifdown "$iface" 2>/dev/null
+	ubus call network.interface down "{\"interface\":\"$iface\"}" 2>/dev/null
 	sleep 3
-	ifup "$iface" 2>/dev/null
+	ubus call network.interface up "{\"interface\":\"$iface\"}" 2>/dev/null
 
-	printf '{"result":"ok","interface":"%s","time":"%s"}' "$iface" "$timestamp"
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_add_string "result" "ok"
+	json_add_string "interface" "$iface"
+	json_add_string "time" "$timestamp"
+	json_dump
 }
 
 do_get_interfaces() {

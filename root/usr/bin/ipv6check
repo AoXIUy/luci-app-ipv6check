@@ -4,6 +4,7 @@
 # 连续失败超过阈值时自动重启指定网络接口
 
 . /lib/functions.sh
+. /usr/share/libubox/jshn.sh
 
 # 检测 ping6 还是 ping -6
 if command -v ping6 >/dev/null 2>&1; then
@@ -141,15 +142,14 @@ check_one_target() {
 	local timestamp
 	timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-	# 追加到临时 JSON 数组
-	if [ "$FIRST_TARGET" = "1" ]; then
-		FIRST_TARGET=0
-	else
-		printf ',' >> "${STATUS_FILE}.tmp"
-	fi
-
-	printf '{"name":"%s","host":"%s","status":"%s","status_text":"%s","last_check":"%s"}' \
-		"$name" "$host" "$result_code" "$result_text" "$timestamp" >> "${STATUS_FILE}.tmp"
+	# 使用 jshn 添加数组元素
+	json_add_object ""
+	json_add_string "name" "$name"
+	json_add_string "host" "$host"
+	json_add_string "status" "$result_code"
+	json_add_string "status_text" "$result_text"
+	json_add_string "last_check" "$timestamp"
+	json_close_object
 }
 
 # 执行一轮完整检测
@@ -159,19 +159,18 @@ run_check_cycle() {
 
 	TARGETS_TOTAL=0
 	TARGETS_FAILED=0
-	FIRST_TARGET=1
 
 	log_msg 1 "===== 开始 IPv6 连通性检测 ====="
 
-	# 创建临时状态文件
-	printf '{"check_time":"%s","targets":[' "$timestamp" > "${STATUS_FILE}.tmp"
+	json_init
+	json_add_string "check_time" "$timestamp"
+	json_add_array "targets"
 
 	# 遍历所有检测目标
 	config_load ipv6check
 	config_foreach check_one_target target
 
-	# 关闭 JSON
-	printf '],' >> "${STATUS_FILE}.tmp"
+	json_close_array
 
 	# 判断整体连通性
 	local overall="ok"
@@ -197,11 +196,19 @@ run_check_cycle() {
 	# 写入整体状态
 	local last_restart
 	last_restart=$(cat "${STATUS_DIR}/last_restart" 2>/dev/null || echo '从未')
-	printf '"overall":"%s","total_targets":%d,"failed_targets":%d,"consecutive_failures":%d,"failure_threshold":%d,"restart_interface":"%s","auto_restart":%d,"interval":%d,"last_restart":"%s"}' \
-		"$overall" "$TARGETS_TOTAL" "$TARGETS_FAILED" "$CONSECUTIVE_FAILURES" "$FAILURE_THRESHOLD" \
-		"$RESTART_IFACE" "$AUTO_RESTART" "$INTERVAL" "$last_restart" >> "${STATUS_FILE}.tmp"
+	
+	json_add_string "overall" "$overall"
+	json_add_int "total_targets" "$TARGETS_TOTAL"
+	json_add_int "failed_targets" "$TARGETS_FAILED"
+	json_add_int "consecutive_failures" "$CONSECUTIVE_FAILURES"
+	json_add_int "failure_threshold" "$FAILURE_THRESHOLD"
+	json_add_string "restart_interface" "$RESTART_IFACE"
+	json_add_int "auto_restart" "$AUTO_RESTART"
+	json_add_int "interval" "$INTERVAL"
+	json_add_string "last_restart" "$last_restart"
 
-	# 原子替换状态文件
+	# 导出为 JSON 字符串并原子替换
+	json_dump > "${STATUS_FILE}.tmp"
 	mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
 
 	# 判断是否需要重启接口
@@ -235,10 +242,10 @@ do_restart_interface() {
 		mv "${STATUS_DIR}/restart_history.tmp" "${STATUS_DIR}/restart_history"
 	fi
 
-	# 执行接口重启
-	ifdown "$RESTART_IFACE" 2>/dev/null
+	# 执行接口重启 (使用 ubus 以提升可靠性)
+	ubus call network.interface down "{\"interface\":\"$RESTART_IFACE\"}" 2>/dev/null
 	sleep 3
-	ifup "$RESTART_IFACE" 2>/dev/null
+	ubus call network.interface up "{\"interface\":\"$RESTART_IFACE\"}" 2>/dev/null
 
 	# 重置连续失败计数
 	CONSECUTIVE_FAILURES=0
