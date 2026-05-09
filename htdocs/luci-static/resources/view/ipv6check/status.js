@@ -48,7 +48,11 @@ var statusMap = {
 
 /* 构建样式表 */
 function injectStyles() {
+	if (document.getElementById('ipv6check-status-style'))
+		return;
+
 	var style = document.createElement('style');
+	style.id = 'ipv6check-status-style';
 	style.textContent = [
 		/* 基础容器 */
 		'.ipv6check-wrap { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }',
@@ -67,6 +71,8 @@ function injectStyles() {
 		'.ipv6check-target:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }',
 		'.ipv6check-target .name { font-weight: 600; color: #333; }',
 		'.ipv6check-target .host { font-family: "Consolas", "Courier New", monospace; font-size: 13px; color: #666; }',
+		'.ipv6check-target > div:first-child { min-width: 0; }',
+		'.ipv6check-target > div:last-child { flex-shrink: 0; text-align: right; }',
 		'.ipv6check-target .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }',
 		'.status-ok { background: rgba(46,204,113,0.15); color: #27ae60; }',
 		'.status-fail { background: rgba(231,76,60,0.15); color: #c0392b; }',
@@ -91,7 +97,8 @@ function injectStyles() {
 
 		/* 加载动画 */
 		'.ipv6check-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: ipv6spin 0.6s linear infinite; margin-right: 6px; vertical-align: middle; }',
-		'@keyframes ipv6spin { to { transform: rotate(360deg); } }'
+		'@keyframes ipv6spin { to { transform: rotate(360deg); } }',
+		'@media (max-width: 640px) { .ipv6check-actions { flex-direction: column; } .ipv6check-target { align-items: flex-start; flex-direction: column; gap: 8px; } .ipv6check-target > div:last-child { text-align: left; } .ipv6check-info-row { align-items: flex-start; flex-direction: column; gap: 4px; } }'
 	].join('\n');
 	document.head.appendChild(style);
 }
@@ -136,6 +143,13 @@ return view.extend({
 		injectStyles();
 
 		var wrap = E('div', { 'class': 'ipv6check-wrap' });
+		var reloadData = function() {
+			return Promise.all([
+				callGetStatus(),
+				callGetLog(80),
+				callGetRestartHistory()
+			]);
+		};
 
 		var updateView = function(data) {
 			var status = data[0] || {};
@@ -156,7 +170,7 @@ return view.extend({
 					checkBtn.disabled = true;
 					checkBtn.innerHTML = '<span class="ipv6check-spinner"></span>检测中...';
 					callRunCheck().then(function() {
-						return Promise.all([callGetStatus(), callGetLog(80), callGetRestartHistory()]);
+						return reloadData();
 					}).then(function(newData) {
 						updateView(newData);
 					}).catch(function() {
@@ -175,9 +189,16 @@ return view.extend({
 					restartBtn.innerHTML = '<span class="ipv6check-spinner"></span>重启中...';
 					callRestartInterface(iface).then(function() {
 						setTimeout(function() {
-							Promise.all([callGetStatus(), callGetLog(80), callGetRestartHistory()])
-								.then(updateView);
+							reloadData()
+								.then(updateView)
+								.catch(function() {
+									restartBtn.disabled = false;
+									restartBtn.textContent = '🔄 重启接口 (' + iface + ')';
+								});
 						}, 5000);
+					}).catch(function() {
+						restartBtn.disabled = false;
+						restartBtn.textContent = '🔄 重启接口 (' + iface + ')';
 					});
 				}
 			}, '🔄 重启接口 (' + (status.restart_interface || 'wan6') + ')');
@@ -313,12 +334,10 @@ return view.extend({
 
 		/* ===== 启用轮询自动刷新 ===== */
 		poll.add(function() {
-			return Promise.all([
-				callGetStatus(),
-				callGetLog(80),
-				callGetRestartHistory()
-			]).then(function(newData) {
+			return reloadData().then(function(newData) {
 				updateView(newData);
+			}).catch(function() {
+				return null;
 			});
 		}, 30);
 

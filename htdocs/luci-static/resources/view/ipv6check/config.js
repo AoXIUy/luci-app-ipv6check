@@ -3,7 +3,6 @@
 'require form';
 'require uci';
 'require rpc';
-'require tools.widgets as widgets';
 
 /* IPv6 连通性检测 - 参数配置页面 */
 
@@ -24,6 +23,8 @@ return view.extend({
 	render: function(data) {
 		var ifaceData = data[1] || {};
 		var interfaces = ifaceData.interfaces || ['wan', 'wan6', 'lan'];
+		if (!interfaces.length)
+			interfaces = ['wan', 'wan6', 'lan'];
 
 		var m, s, o;
 
@@ -51,7 +52,7 @@ return view.extend({
 		o.rmempty = false;
 		o.validate = function(section_id, value) {
 			var v = parseInt(value);
-			if (isNaN(v) || v < 30) return '检测间隔不能小于 30 秒';
+			if (isNaN(v) || v < 30 || v > 86400) return '检测间隔必须在 30 到 86400 秒之间';
 			return true;
 		};
 
@@ -61,6 +62,11 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.default = '3';
 		o.placeholder = '3';
+		o.validate = function(section_id, value) {
+			var v = parseInt(value);
+			if (isNaN(v) || v < 1 || v > 10) return '重试次数必须在 1 到 10 之间';
+			return true;
+		};
 
 		/* 重试间隔 */
 		o = s.option(form.Value, 'retry_interval', '重试间隔（秒）',
@@ -68,6 +74,11 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.default = '10';
 		o.placeholder = '10';
+		o.validate = function(section_id, value) {
+			var v = parseInt(value);
+			if (isNaN(v) || v < 1 || v > 3600) return '重试间隔必须在 1 到 3600 秒之间';
+			return true;
+		};
 
 		/* 失败阈值 */
 		o = s.option(form.Value, 'failure_threshold', '失败阈值',
@@ -77,7 +88,7 @@ return view.extend({
 		o.placeholder = '3';
 		o.validate = function(section_id, value) {
 			var v = parseInt(value);
-			if (isNaN(v) || v < 1) return '失败阈值不能小于 1';
+			if (isNaN(v) || v < 1 || v > 100) return '失败阈值必须在 1 到 100 之间';
 			return true;
 		};
 
@@ -112,6 +123,11 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.default = '100';
 		o.placeholder = '100';
+		o.validate = function(section_id, value) {
+			var v = parseInt(value);
+			if (isNaN(v) || v < 10 || v > 10000) return '最大日志条目必须在 10 到 10000 之间';
+			return true;
+		};
 
 		/* ===== 检测目标列表 ===== */
 		s = m.section(form.TableSection, 'target', '检测目标',

@@ -8,11 +8,52 @@ STATUS_DIR="/tmp/ipv6check"
 STATUS_FILE="${STATUS_DIR}/status.json"
 LOG_FILE="${STATUS_DIR}/check.log"
 
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+	return 0
+}
+
+valid_iface_name() {
+	case "$1" in
+		''|*[!A-Za-z0-9_.:-]*)
+			return 1
+			;;
+	esac
+	return 0
+}
+
+json_error() {
+	local message="$1"
+
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_add_string "result" "error"
+	json_add_string "message" "$message"
+	json_dump
+}
+
+trim_history() {
+	local history_file="${STATUS_DIR}/restart_history"
+	local lines
+
+	lines=$(wc -l < "$history_file" 2>/dev/null || echo 0)
+	if [ "$lines" -gt 50 ]; then
+		tail -n 25 "$history_file" > "${history_file}.tmp"
+		mv "${history_file}.tmp" "$history_file"
+	fi
+}
+
 # 封装为函数以确保 local 关键字合法
 do_get_log() {
 	local lines
 	lines=$(jsonfilter -e '@.lines' 2>/dev/null)
-	[ -z "$lines" ] && lines=50
+	is_uint "$lines" || lines=50
+	[ "$lines" -lt 1 ] && lines=1
+	[ "$lines" -gt 500 ] && lines=500
 
 	. /usr/share/libubox/jshn.sh
 	json_init
@@ -60,20 +101,34 @@ do_restart_interface() {
 		config_get iface global restart_interface wan6
 	}
 
+	if ! valid_iface_name "$iface"; then
+		json_error "无效接口名"
+		return
+	fi
+
 	local timestamp
 	timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
 	mkdir -p "$STATUS_DIR"
 	logger -t ipv6check "手动重启接口: ${iface}"
-	echo "${timestamp} | 手动重启接口 ${iface}" >> "${STATUS_DIR}/restart_history"
 
-	ubus call network.interface down "{\"interface\":\"$iface\"}" 2>/dev/null
+	ubus call network.interface down "{\"interface\":\"$iface\"}" >/dev/null 2>&1
+	local down_rc=$?
 	sleep 3
-	ubus call network.interface up "{\"interface\":\"$iface\"}" 2>/dev/null
+	ubus call network.interface up "{\"interface\":\"$iface\"}" >/dev/null 2>&1
+	local up_rc=$?
 
 	. /usr/share/libubox/jshn.sh
 	json_init
-	json_add_string "result" "ok"
+	if [ "$down_rc" -eq 0 ] && [ "$up_rc" -eq 0 ]; then
+		echo "$timestamp" > "${STATUS_DIR}/last_restart"
+		echo "${timestamp} | 手动重启接口 ${iface}" >> "${STATUS_DIR}/restart_history"
+		trim_history
+		json_add_string "result" "ok"
+	else
+		json_add_string "result" "error"
+		json_add_string "message" "接口重启命令执行失败"
+	fi
 	json_add_string "interface" "$iface"
 	json_add_string "time" "$timestamp"
 	json_dump
@@ -81,34 +136,32 @@ do_restart_interface() {
 
 do_get_interfaces() {
 	local ifaces
+	local list=""
+	local iface
+
 	ifaces=$(ubus call network.interface dump 2>/dev/null)
 	if [ -n "$ifaces" ]; then
-		local list=""
-		local first=1
 		# 使用 jsonfilter 正确提取接口名
 		for iface in $(echo "$ifaces" | jsonfilter -e '@.interface[*].interface' 2>/dev/null); do
-			if [ "$first" = "1" ]; then
-				list="\"${iface}\""
-				first=0
-			else
-				list="${list},\"${iface}\""
-			fi
+			valid_iface_name "$iface" && list="${list:+$list }$iface"
 		done
-		printf '{"interfaces":[%s]}' "$list"
-	else
-		# 回退方案: 从 UCI 读取
-		local list=""
-		local first=1
-		for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1); do
-			if [ "$first" = "1" ]; then
-				list="\"${iface}\""
-				first=0
-			else
-				list="${list},\"${iface}\""
-			fi
-		done
-		printf '{"interfaces":[%s]}' "$list"
 	fi
+
+	if [ -z "$list" ]; then
+		# 回退方案: 从 UCI 读取
+		for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1); do
+			valid_iface_name "$iface" && list="${list:+$list }$iface"
+		done
+	fi
+
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_add_array "interfaces"
+	for iface in $list; do
+		json_add_string "" "$iface"
+	done
+	json_close_array
+	json_dump
 }
 
 case "$1" in

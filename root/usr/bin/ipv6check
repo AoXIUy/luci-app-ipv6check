@@ -8,9 +8,11 @@
 
 # 检测 ping6 还是 ping -6
 if command -v ping6 >/dev/null 2>&1; then
-	PING6_CMD="ping6 -c 2 -W 5"
+	PING6_BIN="ping6"
+	PING6_ARGS="-c 2 -W 5"
 else
-	PING6_CMD="ping -6 -c 2 -W 5"
+	PING6_BIN="ping"
+	PING6_ARGS="-6 -c 2 -W 5"
 fi
 
 # ========== 常量定义 ==========
@@ -40,6 +42,8 @@ log_msg() {
 	local timestamp
 	timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
+	ensure_dirs
+
 	# 根据日志级别过滤
 	[ "$LOG_LEVEL" -lt "$level" ] && return
 
@@ -64,6 +68,56 @@ ensure_dirs() {
 	mkdir -p "$STATUS_DIR"
 }
 
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*)
+			return 1
+			;;
+	esac
+	return 0
+}
+
+normalize_uint() {
+	local var="$1"
+	local value="$2"
+	local default="$3"
+	local min="$4"
+	local max="$5"
+
+	is_uint "$value" || value="$default"
+	[ "$value" -lt "$min" ] && value="$min"
+	[ -n "$max" ] && [ "$value" -gt "$max" ] && value="$max"
+	eval "$var=\$value"
+}
+
+normalize_bool() {
+	local var="$1"
+	local value="$2"
+	local default="$3"
+
+	case "$value" in
+		1|true|yes|on|enabled)
+			value=1
+			;;
+		0|false|no|off|disabled)
+			value=0
+			;;
+		*)
+			value="$default"
+			;;
+	esac
+	eval "$var=\$value"
+}
+
+valid_iface_name() {
+	case "$1" in
+		''|*[!A-Za-z0-9_.:-]*)
+			return 1
+			;;
+	esac
+	return 0
+}
+
 # 加载 UCI 配置
 load_config() {
 	config_load ipv6check
@@ -79,10 +133,16 @@ load_config() {
 	config_get FAILURE_THRESHOLD global failure_threshold 3
 
 	# 参数合法性校验
-	[ "$INTERVAL" -lt 30 ] && INTERVAL=30
-	[ "$RETRY_COUNT" -lt 1 ] && RETRY_COUNT=1
-	[ "$RETRY_INTERVAL" -lt 5 ] && RETRY_INTERVAL=5
-	[ "$FAILURE_THRESHOLD" -lt 1 ] && FAILURE_THRESHOLD=1
+	normalize_bool ENABLED "$ENABLED" 1
+	normalize_bool AUTO_RESTART "$AUTO_RESTART" 1
+	normalize_uint INTERVAL "$INTERVAL" 300 30 86400
+	normalize_uint RETRY_COUNT "$RETRY_COUNT" 3 1 10
+	normalize_uint RETRY_INTERVAL "$RETRY_INTERVAL" 10 1 3600
+	normalize_uint LOG_LEVEL "$LOG_LEVEL" 1 0 2
+	normalize_uint MAX_LOG_ENTRIES "$MAX_LOG_ENTRIES" 100 10 10000
+	normalize_uint FAILURE_THRESHOLD "$FAILURE_THRESHOLD" 3 1 100
+
+	valid_iface_name "$RESTART_IFACE" || RESTART_IFACE="wan6"
 }
 
 # ========== 检测逻辑 ==========
@@ -98,7 +158,7 @@ check_target() {
 
 	while [ "$attempt" -lt "$retries" ]; do
 		# ping IPv6: 发送2个包，超时5秒
-		if $PING6_CMD "$host" >/dev/null 2>&1; then
+		if "$PING6_BIN" $PING6_ARGS "$host" >/dev/null 2>&1; then
 			return 0
 		fi
 		attempt=$((attempt + 1))
@@ -176,6 +236,7 @@ run_check_cycle() {
 	local overall="ok"
 	if [ "$TARGETS_TOTAL" -eq 0 ]; then
 		overall="unknown"
+		CONSECUTIVE_FAILURES=0
 		log_msg 1 "[状态] 没有配置任何检测目标"
 	elif [ "$TARGETS_FAILED" -ge "$TARGETS_TOTAL" ]; then
 		overall="fail"
@@ -193,10 +254,16 @@ run_check_cycle() {
 		CONSECUTIVE_FAILURES=0
 	fi
 
+	# 判断是否需要重启接口
+	if [ "$overall" = "fail" ] && [ "$AUTO_RESTART" = "1" ] && \
+	   [ "$CONSECUTIVE_FAILURES" -ge "$FAILURE_THRESHOLD" ]; then
+		do_restart_interface
+	fi
+
 	# 写入整体状态
 	local last_restart
 	last_restart=$(cat "${STATUS_DIR}/last_restart" 2>/dev/null || echo '从未')
-	
+
 	json_add_string "overall" "$overall"
 	json_add_int "total_targets" "$TARGETS_TOTAL"
 	json_add_int "failed_targets" "$TARGETS_FAILED"
@@ -211,12 +278,6 @@ run_check_cycle() {
 	json_dump > "${STATUS_FILE}.tmp"
 	mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
 
-	# 判断是否需要重启接口
-	if [ "$overall" = "fail" ] && [ "$AUTO_RESTART" = "1" ] && \
-	   [ "$CONSECUTIVE_FAILURES" -ge "$FAILURE_THRESHOLD" ]; then
-		do_restart_interface
-	fi
-
 	log_msg 1 "===== 检测完成: 总计=${TARGETS_TOTAL} 失败=${TARGETS_FAILED} 状态=${overall} ====="
 }
 
@@ -227,6 +288,23 @@ do_restart_interface() {
 	timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
 	log_msg 1 "[动作] IPv6 连续 ${CONSECUTIVE_FAILURES} 次全部失败，正在重启接口: ${RESTART_IFACE}"
+
+	if ! valid_iface_name "$RESTART_IFACE"; then
+		log_msg 1 "[错误] 接口名无效，已跳过重启: ${RESTART_IFACE}"
+		return 1
+	fi
+
+	# 执行接口重启 (使用 ubus 以提升可靠性)
+	ubus call network.interface down "{\"interface\":\"$RESTART_IFACE\"}" >/dev/null 2>&1
+	local down_rc=$?
+	sleep 3
+	ubus call network.interface up "{\"interface\":\"$RESTART_IFACE\"}" >/dev/null 2>&1
+	local up_rc=$?
+
+	if [ "$down_rc" -ne 0 ] || [ "$up_rc" -ne 0 ]; then
+		log_msg 1 "[错误] 接口 ${RESTART_IFACE} 重启命令执行失败"
+		return 1
+	fi
 
 	# 记录重启时间
 	echo "$timestamp" > "${STATUS_DIR}/last_restart"
@@ -241,11 +319,6 @@ do_restart_interface() {
 		tail -n 25 "${STATUS_DIR}/restart_history" > "${STATUS_DIR}/restart_history.tmp"
 		mv "${STATUS_DIR}/restart_history.tmp" "${STATUS_DIR}/restart_history"
 	fi
-
-	# 执行接口重启 (使用 ubus 以提升可靠性)
-	ubus call network.interface down "{\"interface\":\"$RESTART_IFACE\"}" 2>/dev/null
-	sleep 3
-	ubus call network.interface up "{\"interface\":\"$RESTART_IFACE\"}" 2>/dev/null
 
 	# 重置连续失败计数
 	CONSECUTIVE_FAILURES=0

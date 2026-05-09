@@ -12,7 +12,7 @@ PKG_RELEASE:=1
 
 LUCI_TITLE:=LuCI support for IPv6 Connectivity Check
 LUCI_DESCRIPTION:=IPv6 连通性定时检测与自动恢复插件，支持多源检测和接口自动重启
-LUCI_DEPENDS:=+iputils-ping
+LUCI_DEPENDS:=+iputils-ping +jsonfilter
 LUCI_PKGARCH:=all
 
 PKG_LICENSE:=GPL-2.0-only
