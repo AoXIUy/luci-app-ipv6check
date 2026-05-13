@@ -58,13 +58,11 @@ function injectStyles() {
 		'.ipv6check-wrap { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }',
 		'.ipv6check-card { background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 20px; margin-bottom: 16px; border: 1px solid #e8e8e8; }',
 		'.ipv6check-card h3 { margin: 0 0 16px 0; font-size: 16px; color: #333; border-bottom: 2px solid #4a90d9; padding-bottom: 8px; }',
-
 		/* 总览状态 */
 		'.ipv6check-overview { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }',
 		'.ipv6check-stat { flex: 1; min-width: 160px; padding: 16px; border-radius: 8px; text-align: center; }',
 		'.ipv6check-stat .label { font-size: 12px; color: #888; margin-bottom: 4px; }',
 		'.ipv6check-stat .value { font-size: 22px; font-weight: 700; }',
-
 		/* 目标列表 */
 		'.ipv6check-targets { display: grid; gap: 10px; }',
 		'.ipv6check-target { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 6px; border: 1px solid #eee; background: #fafafa; transition: all 0.2s; }',
@@ -76,7 +74,6 @@ function injectStyles() {
 		'.ipv6check-target .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }',
 		'.status-ok { background: rgba(46,204,113,0.15); color: #27ae60; }',
 		'.status-fail { background: rgba(231,76,60,0.15); color: #c0392b; }',
-
 		/* 操作按钮 */
 		'.ipv6check-actions { display: flex; gap: 10px; margin-bottom: 16px; }',
 		'.ipv6check-btn { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }',
@@ -85,16 +82,13 @@ function injectStyles() {
 		'.ipv6check-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }',
 		'.btn-primary { background: #4a90d9; color: #fff; }',
 		'.btn-warning { background: #e67e22; color: #fff; }',
-
 		/* 日志区域 */
 		'.ipv6check-log { background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 8px; font-family: "Consolas", "Courier New", monospace; font-size: 12px; line-height: 1.6; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }',
-
 		/* 信息行 */
 		'.ipv6check-info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }',
 		'.ipv6check-info-row:last-child { border-bottom: none; }',
 		'.ipv6check-info-row .key { color: #888; font-size: 13px; }',
 		'.ipv6check-info-row .val { color: #333; font-size: 13px; font-weight: 500; }',
-
 		/* 加载动画 */
 		'.ipv6check-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: ipv6spin 0.6s linear infinite; margin-right: 6px; vertical-align: middle; }',
 		'@keyframes ipv6spin { to { transform: rotate(360deg); } }',
@@ -143,6 +137,23 @@ return view.extend({
 		injectStyles();
 
 		var wrap = E('div', { 'class': 'ipv6check-wrap' });
+
+		/*
+		 * 日志区域使用持久化 DOM 节点：
+		 * 轮询时只更新 textContent，不重建节点，避免滚动位置被重置
+		 */
+		var logContentEl = E('div', { 'class': 'ipv6check-log' });
+		var historyContentEl = E('div', { 'class': 'ipv6check-log', 'style': { maxHeight: '200px' } });
+
+		var logCard = E('div', { 'class': 'ipv6check-card' }, [
+			E('h3', {}, '📋 检测日志'),
+			logContentEl
+		]);
+		var historyCard = E('div', { 'class': 'ipv6check-card' }, [
+			E('h3', {}, '🔄 接口重启历史'),
+			historyContentEl
+		]);
+
 		var reloadData = function() {
 			return Promise.all([
 				callGetStatus(),
@@ -155,6 +166,10 @@ return view.extend({
 			var status = data[0] || {};
 			var logData = data[1] || {};
 			var historyData = data[2] || {};
+
+			/* 仅更新日志文本，不重建节点，保留用户滚动位置 */
+			logContentEl.textContent = logData.log || '暂无日志';
+			historyContentEl.textContent = historyData.history || '暂无重启记录';
 
 			var overallInfo = statusMap[status.overall] || statusMap['unknown'];
 			var targets = status.targets || [];
@@ -309,22 +324,12 @@ return view.extend({
 
 			content.appendChild(infoCard);
 
-			/* ===== 日志卡片 ===== */
-			var logCard = E('div', { 'class': 'ipv6check-card' });
-			logCard.appendChild(E('h3', {}, '📋 检测日志'));
-
-			var logContent = logData.log || '暂无日志';
-			logCard.appendChild(E('div', { 'class': 'ipv6check-log' }, logContent));
-
+			/*
+			 * 日志卡片和历史卡片复用持久化节点，追加到 fragment 末尾。
+			 * dom.content 会将旧子节点替换为 fragment 内容，
+			 * 但 logCard / historyCard 节点对象本身不变，内部滚动位置得以保留。
+			 */
 			content.appendChild(logCard);
-
-			/* ===== 重启历史卡片 ===== */
-			var historyCard = E('div', { 'class': 'ipv6check-card' });
-			historyCard.appendChild(E('h3', {}, '🔄 接口重启历史'));
-
-			var historyContent = historyData.history || '暂无重启记录';
-			historyCard.appendChild(E('div', { 'class': 'ipv6check-log', 'style': { maxHeight: '200px' } }, historyContent));
-
 			content.appendChild(historyCard);
 
 			dom.content(wrap, content);
@@ -332,14 +337,21 @@ return view.extend({
 
 		updateView(data);
 
-		/* ===== 启用轮询自动刷新 ===== */
+		/*
+		 * 轮询间隔与后端检测间隔对齐：
+		 * 取 status.interval（后端配置值）的一半，最小 30s，最大 120s。
+		 * 避免前端以 30s 固定间隔轮询，而后端 300s 才跑一次检测的浪费。
+		 */
+		var backendInterval = (data[0] || {}).interval || 300;
+		var pollInterval = Math.max(30, Math.min(Math.floor(backendInterval / 2), 120));
+
 		poll.add(function() {
 			return reloadData().then(function(newData) {
 				updateView(newData);
 			}).catch(function() {
 				return null;
 			});
-		}, 30);
+		}, pollInterval);
 
 		return wrap;
 	}

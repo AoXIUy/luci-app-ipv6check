@@ -85,24 +85,37 @@ do_get_restart_history() {
 
 do_run_check() {
 	mkdir -p "$STATUS_DIR"
-	/usr/bin/ipv6check --once >/dev/null 2>&1
+	# 后台异步执行检测，避免长时间阻塞 rpcd 进程
+	# 默认配置下，3 目标最长阻塞可达 135 秒，必须异步
+	/usr/bin/ipv6check --once >/dev/null 2>&1 &
+	# 立即返回当前（可能稍旧的）状态，前端将在下次轮询时获得最新数据
 	if [ -f "$STATUS_FILE" ]; then
 		cat "$STATUS_FILE"
 	else
-		echo '{"overall":"error","check_time":"检测失败"}'
+		echo '{"overall":"unknown","check_time":"检测中...","targets":[],"total_targets":0,"failed_targets":0,"consecutive_failures":0}'
 	fi
 }
 
 do_restart_interface() {
 	local iface
 	iface=$(jsonfilter -e '@.interface' 2>/dev/null)
-	[ -z "$iface" ] && {
-		config_load ipv6check
-		config_get iface global restart_interface wan6
-	}
+
+	# 从 UCI 读取允许重启的接口（白名单）
+	config_load ipv6check
+	local allowed_iface
+	config_get allowed_iface global restart_interface wan6
+
+	# 若未传入接口名，使用 UCI 配置的默认值
+	[ -z "$iface" ] && iface="$allowed_iface"
 
 	if ! valid_iface_name "$iface"; then
 		json_error "无效接口名"
+		return
+	fi
+
+	# 安全校验：只允许重启 UCI 配置中指定的接口，防止越权操作
+	if [ "$iface" != "$allowed_iface" ]; then
+		json_error "接口 $iface 不在允许列表中，只允许重启: $allowed_iface"
 		return
 	fi
 

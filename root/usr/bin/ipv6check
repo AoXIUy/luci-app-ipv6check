@@ -32,6 +32,8 @@ LOG_LEVEL=1
 MAX_LOG_ENTRIES=100
 FAILURE_THRESHOLD=3
 CONSECUTIVE_FAILURES=0
+# 写计数器：用于降低 log_msg 中 wc -l 的调用频率
+LOG_WRITE_COUNT=0
 
 # ========== 工具函数 ==========
 
@@ -53,13 +55,16 @@ log_msg() {
 	# 写入本地日志文件
 	echo "${timestamp} | ${msg}" >> "$LOG_FILE"
 
-	# 限制日志文件大小
-	local lines
-	lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
-	if [ "$lines" -gt "$MAX_LOG_ENTRIES" ]; then
-		local keep=$((MAX_LOG_ENTRIES / 2))
-		tail -n "$keep" "$LOG_FILE" > "${LOG_FILE}.tmp"
-		mv "${LOG_FILE}.tmp" "$LOG_FILE"
+	# 每 10 次写入才检查一次是否需要裁剪，减少高频 wc -l 的 I/O 开销
+	LOG_WRITE_COUNT=$((LOG_WRITE_COUNT + 1))
+	if [ $((LOG_WRITE_COUNT % 10)) -eq 0 ]; then
+		local lines
+		lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+		if [ "$lines" -gt "$MAX_LOG_ENTRIES" ]; then
+			local keep=$((MAX_LOG_ENTRIES / 2))
+			tail -n "$keep" "$LOG_FILE" > "${LOG_FILE}.tmp"
+			mv "${LOG_FILE}.tmp" "$LOG_FILE"
+		fi
 	fi
 }
 
@@ -226,8 +231,7 @@ run_check_cycle() {
 	json_add_string "check_time" "$timestamp"
 	json_add_array "targets"
 
-	# 遍历所有检测目标
-	config_load ipv6check
+	# 遍历所有检测目标（config_load 已在 load_config 中完成，无需重复调用）
 	config_foreach check_one_target target
 
 	json_close_array
@@ -253,6 +257,9 @@ run_check_cycle() {
 		fi
 		CONSECUTIVE_FAILURES=0
 	fi
+
+	# 持久化连续失败计数，确保服务重启后（procd respawn 等场景）状态不丢失
+	echo "$CONSECUTIVE_FAILURES" > "${STATUS_DIR}/consecutive_failures"
 
 	# 判断是否需要重启接口
 	if [ "$overall" = "fail" ] && [ "$AUTO_RESTART" = "1" ] && \
@@ -320,8 +327,9 @@ do_restart_interface() {
 		mv "${STATUS_DIR}/restart_history.tmp" "${STATUS_DIR}/restart_history"
 	fi
 
-	# 重置连续失败计数
+	# 重置连续失败计数并持久化
 	CONSECUTIVE_FAILURES=0
+	echo "$CONSECUTIVE_FAILURES" > "${STATUS_DIR}/consecutive_failures"
 
 	log_msg 1 "[动作] 接口 ${RESTART_IFACE} 已重启，等待恢复..."
 
@@ -335,6 +343,9 @@ do_restart_interface() {
 run_once() {
 	ensure_dirs
 	load_config
+	# 读取持久化的连续失败计数，确保重启后状态延续
+	CONSECUTIVE_FAILURES=$(cat "${STATUS_DIR}/consecutive_failures" 2>/dev/null || echo 0)
+	is_uint "$CONSECUTIVE_FAILURES" || CONSECUTIVE_FAILURES=0
 	run_check_cycle
 }
 
@@ -342,6 +353,9 @@ run_once() {
 run_daemon() {
 	ensure_dirs
 	load_config
+	# 读取持久化的连续失败计数，确保 procd 自动重启后状态不从零开始
+	CONSECUTIVE_FAILURES=$(cat "${STATUS_DIR}/consecutive_failures" 2>/dev/null || echo 0)
+	is_uint "$CONSECUTIVE_FAILURES" || CONSECUTIVE_FAILURES=0
 
 	# 写入 PID 文件
 	echo $$ > "$PID_FILE"

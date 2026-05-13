@@ -150,8 +150,13 @@ return view.extend({
 		o.width = '45%';
 		o.validate = function(section_id, value) {
 			if (!value || value === '') return '请输入 IPv6 地址';
-			/* 基本的 IPv6 地址格式检查 */
-			if (!/^[0-9a-fA-F:]+$/.test(value) && !/^[a-zA-Z0-9\.\-]+$/.test(value)) {
+
+			/* 严格 IPv6 地址格式校验（RFC 4291 全表示形式） */
+			var ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+			/* 合规域名格式校验（RFC 1123：每段 1-63 字母数字或连字符，不以连字符开头/结尾） */
+			var hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$/;
+
+			if (!ipv6Regex.test(value) && !hostnameRegex.test(value)) {
 				return '请输入有效的 IPv6 地址或域名';
 			}
 			return true;
